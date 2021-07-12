@@ -6,10 +6,13 @@ fn main() {
     println!("Hello, world!");
 }
 
-pub trait Tree<I> {
+pub trait Tree<'items, I>
+where
+    Self: 'items,
+{
     type Query;
 
-    fn build(items: &[I], dim: usize) -> Self;
+    fn build(items: &'items [I], dim: usize) -> Self;
     fn query(&self, query: &Self::Query) -> Vec<I>;
 }
 
@@ -18,44 +21,43 @@ pub trait Item: Clone {
     fn max_dim() -> usize;
 }
 
-struct RTreeNode<T, S = Element<T>>
+struct RTreeNode<'a, T, S = Element<'a, T>>
 where
     T: Item,
-    S: Tree<T>,
+    S: Tree<'a, T>,
 {
     left: Option<Box<Self>>,
     max_left: usize,
     sub_tree: S,
     right: Option<Box<Self>>,
-    _t: PhantomData<T>,
+    _t: PhantomData<&'a T>,
 }
 
-pub struct Element<T>(T);
+pub struct Element<'a, T>(&'a [T]);
 
-impl<I: Clone> Tree<I> for Element<I> {
+impl<'a, I: Clone> Tree<'a, I> for Element<'a, I> {
     type Query = ();
-    fn build(items: &[I], _dim: usize) -> Self {
-        assert!(items.len() == 1);
-        Element(items[0].clone())
+    fn build(items: &'a [I], _dim: usize) -> Self {
+        Element(items)
     }
 
-    fn query(&self, query: &Self::Query) -> Vec<I> {
-        vec![self.0]
+    fn query(&self, _query: &Self::Query) -> Vec<I> {
+        self.0.to_vec()
     }
 }
 
-pub struct RTree<I, S = Element<I>>
+pub struct RTree<'a, I, S = Element<'a, I>>
 where
     I: Item,
-    S: Tree<I>,
+    S: Tree<'a, I>,
 {
-    head: RTreeNode<I, S>,
+    head: RTreeNode<'a, I, S>,
 }
 
-impl<I, S> RTree<I, S>
+impl<'a, I, S> RTree<'a, I, S>
 where
     I: Item,
-    S: Tree<I>,
+    S: Tree<'a, I>,
 {
     fn build(items: &[I]) -> Self {
         todo!()
@@ -69,7 +71,11 @@ struct RTreeQuery<O: Ord> {
     max: O,
 }
 
-impl<I: Item, S: Tree<I>> RTreeNode<I, S> {
+impl<'a, I, S> RTreeNode<'a, I, S>
+where
+    I: Item,
+    S: Tree<'a, I>,
+{
     fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<I> {
         let mut result = vec![];
         if min <= self.max_left {
@@ -122,11 +128,28 @@ impl<I: Item, S: Tree<I>> RTreeNode<I, S> {
     }
 }
 
-impl<I: Item, S: Tree<I>> Tree<I> for RTreeNode<I, S> {
+impl<'a, I, S> Tree<'a, I> for RTreeNode<'a, I, S>
+where
+    I: Item,
+    S: Tree<'a, I>,
+{
     type Query = (RTreeQuery<usize>, S::Query);
-    fn build(items: &[I], dim: usize) -> Self {
-        let _ = items;
-        let _ = dim;
+    fn build(items: &'a [I], dim: usize) -> Self {
+        let sub_tree = S::build(items, dim + 1);
+        if items.len() == 1 {
+
+            // TODO: no sub tree recursion
+        }
+        let mut items = items.to_vec();
+        items.sort_by_key(|i| i.index(dim));
+
+        let median_index = items.len() / 2;
+        let median = &items[median_index];
+        let max_left = median.index(dim);
+
+        let left = Box::new(Self::build(&items[..=median_index], dim));
+        let rigth = Box::new(Self::build(&items[median_index + 1..], dim));
+
         todo!()
     }
 
@@ -193,7 +216,7 @@ fn test_1d_range_tree() {
 
     let tree = RTree::<usize>::build(&items);
     let query = RTreeQuery { min: 2, max: 6 };
-    let result = tree.head.query((query, ()));
+    let result = tree.head.query(&(query, ()));
 
     assert_eq!(vec![3, 5], result);
 }
