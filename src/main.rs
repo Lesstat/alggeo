@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
+use std::pin::Pin;
 
 fn main() {
     println!("Hello, world!");
@@ -12,7 +13,7 @@ where
 {
     type Query;
 
-    fn build(items: &'items [I], dim: usize) -> Self;
+    fn build(items: &[&'items I], dim: usize) -> Self;
     fn query(&self, query: &Self::Query) -> Vec<I>;
 }
 
@@ -21,24 +22,31 @@ pub trait Item: Clone {
     fn max_dim() -> usize;
 }
 
-struct RTreeNode<'a, T, S = Element<'a, T>>
+struct RTreeNode<'items, 'tree, T, S = Element<'items, 'tree, T>>
 where
     T: Item,
-    S: Tree<'a, T>,
+    S: Tree<'items, T>,
 {
     left: Option<Box<Self>>,
     max_left: usize,
     sub_tree: S,
     right: Option<Box<Self>>,
-    _t: PhantomData<&'a T>,
+    _t: PhantomData<&'items T>,
 }
 
-pub struct Element<'a, T>(&'a [T]);
+// TODO how to resolve liftimes within Trees:
+//  1) raw point in Element in Tree::items
+//  2) Tree::items never move b/c all Trees are not unpin
+//  3) that would delete 'tree everywhere
+//  4) profit
+//  OR simpler
+//  try Vec<&'items T> as Element
+pub struct Element<'items, 'tree, T>(&'tree [&'items T]);
 
-impl<'a, I: Clone> Tree<'a, I> for Element<'a, I> {
+impl<'items, 'tree, I: Clone> Tree<'items, I> for Element<'items, 'tree, I> {
     type Query = ();
-    fn build(items: &'a [I], _dim: usize) -> Self {
-        Element(items)
+    fn build(items: &[&'items I], _dim: usize) -> Self {
+        Element(&items)
     }
 
     fn query(&self, _query: &Self::Query) -> Vec<I> {
@@ -46,21 +54,39 @@ impl<'a, I: Clone> Tree<'a, I> for Element<'a, I> {
     }
 }
 
-pub struct RTree<'a, I, S = Element<'a, I>>
+pub struct RTree<'items, I, S = Element<'items, I>>
 where
     I: Item,
-    S: Tree<'a, I>,
+    S: Tree<'items, I>,
 {
-    head: RTreeNode<'a, I, S>,
+    items: Pin<Box<[&'items I]> has 'tree>,
+    head: RTreeNode<'items, 'tree I, S>,
 }
 
-impl<'a, I, S> RTree<'a, I, S>
+impl<'items, I, S> RTree<'items, I, S>
 where
     I: Item,
-    S: Tree<'a, I>,
+    S: Tree<'items, I>,
+{
+    fn build_internal(items: &[I], dim: usize) -> Self {
+        let mut items: Vec<&I> = items.iter().collect();
+        items.sort_by_key(|i| i.index(dim));
+        let pinned = Box::pin(items.as_mut_slice());
+        let head = RTreeNode::build(&pinned.get_ref(), dim);
+        RTree { head, items: pinned };
+    }
+}
+
+impl<'items, I, S> Tree<'items, I> for RTree<'items, I, S>
+where
+    I: Item,
+    S: Tree<'items, I>,
 {
     fn build(items: &[I]) -> Self {
-        todo!()
+        Self::build_internal(items, 0);
+    }
+    fn query(&self, query: &Self::Query) -> Vec<I> {
+        self.head.query(query);
     }
 }
 
@@ -71,11 +97,13 @@ struct RTreeQuery<O: Ord> {
     max: O,
 }
 
-impl<'a, I, S> RTreeNode<'a, I, S>
+impl<'items, I, S> RTreeNode<'items, I, S>
 where
     I: Item,
-    S: Tree<'a, I>,
+    S: Tree<'items, I>,
 {
+    type Query = (RTreeQuery<usize>, S::Query);
+
     fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<I> {
         let mut result = vec![];
         if min <= self.max_left {
@@ -126,31 +154,21 @@ where
         }
         result
     }
-}
 
-impl<'a, I, S> Tree<'a, I> for RTreeNode<'a, I, S>
-where
-    I: Item,
-    S: Tree<'a, I>,
-{
-    type Query = (RTreeQuery<usize>, S::Query);
-    fn build(items: &'a [I], dim: usize) -> Self {
+    fn build(items: &[&'items I], dim: usize) -> Self {
         let sub_tree = S::build(items, dim + 1);
         if items.len() == 1 {
-
             // TODO: no sub tree recursion
         }
-        let mut items = items.to_vec();
-        items.sort_by_key(|i| i.index(dim));
 
         let median_index = items.len() / 2;
         let median = &items[median_index];
         let max_left = median.index(dim);
 
         let left = Box::new(Self::build(&items[..=median_index], dim));
-        let rigth = Box::new(Self::build(&items[median_index + 1..], dim));
+        let right = Box::new(Self::build(&items[median_index + 1..], dim));
 
-        todo!()
+        Self { left: Some(left), right: Some(right), max_left, sub_tree, _t: PhantomData }
     }
 
     fn query(&self, query: &Self::Query) -> Vec<I> {
