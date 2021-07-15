@@ -44,17 +44,27 @@ where
 //  try Vec<&'items T> as Element
 
 #[derive(Debug)]
-pub struct Element<'items, T>(Vec<&'items T>);
+pub enum Element<'items, T> {
+    Many(Vec<&'items T>),
+    One(&'items T),
+}
 
 impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
     type Query = ();
     fn build(items: &[&'items I], _dim: usize) -> Self {
-        Element(items.to_vec())
+        if items.len() == 1 {
+            Element::One(items[0])
+        } else {
+            Element::Many(items.to_vec())
+        }
     }
 
     fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
-        println!("adding {:?} to output", self.0);
-        self.0.clone()
+        // println!("adding {:?} to output", self.0);
+        match self {
+            Element::Many(v) => v.clone(),
+            Element::One(e) => vec![e],
+        }
     }
 }
 
