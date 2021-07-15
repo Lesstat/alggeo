@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
-use std::pin::Pin;
 
 fn main() {
     println!("Hello, world!");
@@ -14,7 +13,7 @@ where
     type Query;
 
     fn build(items: &[&'items I], dim: usize) -> Self;
-    fn query(&self, query: &Self::Query) -> Vec<I>;
+    fn query(&self, query: &Self::Query) -> Vec<&'items I>;
 }
 
 pub trait Item: Clone {
@@ -22,7 +21,7 @@ pub trait Item: Clone {
     fn max_dim() -> usize;
 }
 
-struct RTreeNode<'items, 'tree, T, S = Element<'items, 'tree, T>>
+struct RTreeNode<'items, T, S = Element<'items, T>>
 where
     T: Item,
     S: Tree<'items, T>,
@@ -41,16 +40,16 @@ where
 //  4) profit
 //  OR simpler
 //  try Vec<&'items T> as Element
-pub struct Element<'items, 'tree, T>(&'tree [&'items T]);
+pub struct Element<'items, T>(Vec<&'items T>);
 
-impl<'items, 'tree, I: Clone> Tree<'items, I> for Element<'items, 'tree, I> {
+impl<'items, I: Clone> Tree<'items, I> for Element<'items, I> {
     type Query = ();
     fn build(items: &[&'items I], _dim: usize) -> Self {
-        Element(&items)
+        Element(items.to_vec())
     }
 
-    fn query(&self, _query: &Self::Query) -> Vec<I> {
-        self.0.to_vec()
+    fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
+        self.0.clone()
     }
 }
 
@@ -59,8 +58,7 @@ where
     I: Item,
     S: Tree<'items, I>,
 {
-    items: Pin<Box<[&'items I]> has 'tree>,
-    head: RTreeNode<'items, 'tree I, S>,
+    head: RTreeNode<'items, I, S>,
 }
 
 impl<'items, I, S> RTree<'items, I, S>
@@ -68,12 +66,16 @@ where
     I: Item,
     S: Tree<'items, I>,
 {
-    fn build_internal(items: &[I], dim: usize) -> Self {
-        let mut items: Vec<&I> = items.iter().collect();
+    fn build_internal(items: &[&'items I], dim: usize) -> Self {
+        let mut items: Vec<&'items I> = items.iter().copied().collect();
         items.sort_by_key(|i| i.index(dim));
-        let pinned = Box::pin(items.as_mut_slice());
-        let head = RTreeNode::build(&pinned.get_ref(), dim);
-        RTree { head, items: pinned };
+        let head = RTreeNode::build(&items, dim);
+        RTree { head }
+    }
+
+    fn build(items: &'items [I]) -> Self {
+        let items: Vec<_> = items.iter().collect();
+        Tree::build(&items, 0)
     }
 }
 
@@ -82,17 +84,19 @@ where
     I: Item,
     S: Tree<'items, I>,
 {
-    fn build(items: &[I]) -> Self {
-        Self::build_internal(items, 0);
+    fn build(items: &[&'items I], dim: usize) -> Self {
+        Self::build_internal(items, dim)
     }
-    fn query(&self, query: &Self::Query) -> Vec<I> {
-        self.head.query(query);
+    fn query(&self, query: &Self::Query) -> Vec<&'items I> {
+        self.head.query(query)
     }
+
+    type Query = (RTreeQuery<usize>, S::Query);
 }
 
 // RTreeNode<Point, TreapNode>::new(&[])
 //
-struct RTreeQuery<O: Ord> {
+pub struct RTreeQuery<O: Ord> {
     min: O,
     max: O,
 }
@@ -102,9 +106,9 @@ where
     I: Item,
     S: Tree<'items, I>,
 {
-    type Query = (RTreeQuery<usize>, S::Query);
+    // type Query = (RTreeQuery<usize>, S::Query);
 
-    fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<I> {
+    fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<&'items I> {
         let mut result = vec![];
         if min <= self.max_left {
             result.extend(
@@ -129,7 +133,7 @@ where
         }
         result
     }
-    fn query_right(&self, max: usize, inner_query: &S::Query) -> Vec<I> {
+    fn query_right(&self, max: usize, inner_query: &S::Query) -> Vec<&'items I> {
         let mut result = vec![];
         if self.max_left < max {
             result.extend(
@@ -168,10 +172,16 @@ where
         let left = Box::new(Self::build(&items[..=median_index], dim));
         let right = Box::new(Self::build(&items[median_index + 1..], dim));
 
-        Self { left: Some(left), right: Some(right), max_left, sub_tree, _t: PhantomData }
+        Self {
+            left: Some(left),
+            right: Some(right),
+            max_left,
+            sub_tree,
+            _t: PhantomData,
+        }
     }
 
-    fn query(&self, query: &Self::Query) -> Vec<I> {
+    fn query(&self, query: &<RTree<'items, I, S> as Tree<'items, I>>::Query) -> Vec<&'items I> {
         let my_query = &query.0;
 
         if my_query.max < self.max_left {
@@ -236,5 +246,5 @@ fn test_1d_range_tree() {
     let query = RTreeQuery { min: 2, max: 6 };
     let result = tree.head.query(&(query, ()));
 
-    assert_eq!(vec![3, 5], result);
+    assert_eq!(vec![&items[1], &items[2]], result);
 }
