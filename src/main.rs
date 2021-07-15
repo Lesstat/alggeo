@@ -7,6 +7,7 @@ use rand::{
     prelude::{Distribution, StdRng},
     thread_rng, Rng, SeedableRng,
 };
+use smallvec::SmallVec;
 
 pub trait Tree<'items, I>
 where
@@ -44,27 +45,16 @@ where
 //  try Vec<&'items T> as Element
 
 #[derive(Debug)]
-pub enum Element<'items, T> {
-    Many(Vec<&'items T>),
-    One(&'items T),
-}
+pub struct Element<'items, I>(SmallVec<[&'items I; 2]>);
 
 impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
     type Query = ();
     fn build(items: &[&'items I], _dim: usize) -> Self {
-        if items.len() == 1 {
-            Element::One(items[0])
-        } else {
-            Element::Many(items.to_vec())
-        }
+        Element(items.into())
     }
 
     fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
-        // println!("adding {:?} to output", self.0);
-        match self {
-            Element::Many(v) => v.clone(),
-            Element::One(e) => vec![e],
-        }
+        self.0.to_vec()
     }
 }
 
@@ -330,7 +320,7 @@ fn main() {
     println!("used seed {}", seed);
 
     let mut rng = StdRng::seed_from_u64(seed);
-    let between = Uniform::from(1..10000);
+    let between = Uniform::from(1..100);
 
     println!("generating points");
     let points: Vec<_> = (0..point_count)
@@ -347,33 +337,47 @@ fn main() {
     let end = Instant::now();
     println!("Building tree took {}s", (end - start).as_secs_f64());
 
-    let x_query = RTreeQuery {
-        min: between.sample(&mut rng),
-        max: between.sample(&mut rng),
-    };
-    let y_query = RTreeQuery {
-        min: between.sample(&mut rng),
-        max: between.sample(&mut rng),
-    };
+    let mut min = between.sample(&mut rng);
+    let mut max = between.sample(&mut rng);
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
+    }
+    let x_query = RTreeQuery { min, max };
+
+    let mut min = between.sample(&mut rng);
+    let mut max = between.sample(&mut rng);
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
+    }
+    let y_query = RTreeQuery { min, max };
 
     println!("precalculating expected results");
     let start = Instant::now();
-    let expected: HashSet<_> = points
+    let expected: Vec<_> = points
         .iter()
         .filter(|&p| {
             x_query.min <= p.x && p.x < x_query.max && y_query.min <= p.y && p.y < y_query.max
         })
         .collect();
     let end = Instant::now();
-    println!("precalc took {}s", (end - start).as_secs_f64());
+    println!(
+        "precalc for {} elments took {}s",
+        expected.len(),
+        (end - start).as_secs_f64()
+    );
+
+    let expected: HashSet<_> = expected.into_iter().collect();
 
     println!("querying tree");
     let start = Instant::now();
     let query = (x_query, (y_query, ()));
+    let result = tree.query(&query);
     let end = Instant::now();
-    println!("querying tree took {}s", (end - start).as_secs_f64());
+    println!(
+        "querying tree for {} elements took {}s",
+        result.len(),
+        (end - start).as_secs_f64()
+    );
 
-    let result: HashSet<_> = tree.query(&query).into_iter().collect();
-
-    assert_eq!(expected, result);
+    assert_eq!(expected, result.into_iter().collect());
 }

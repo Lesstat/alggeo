@@ -13,6 +13,7 @@ name = "geotrees"
 version = "0.1.0"
 dependencies = [
  "rand",
+ "smallvec",
 ]
 
 [[package]]
@@ -77,6 +78,12 @@ checksum = "d51e9f596de227fda2ea6c84607f5558e196eeaf43c986b724ba4fb8fdf497e7"
 dependencies = [
  "rand_core",
 ]
+
+[[package]]
+name = "smallvec"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe0f37c9e8f3c5a4a66ad655a93c74daac4ad00c441533bf5c6e7990bb42604e"
 
 [[package]]
 name = "wasi"
