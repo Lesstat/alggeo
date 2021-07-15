@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 
-use std::{fmt::Debug, marker::PhantomData};
+use std::{collections::HashSet, fmt::Debug, marker::PhantomData, time::Instant};
 
-fn main() {
-    println!("Hello, world!");
-}
+use rand::{
+    distributions::Uniform,
+    prelude::{Distribution, StdRng},
+    thread_rng, Rng, SeedableRng,
+};
 
 pub trait Tree<'items, I>
 where
@@ -113,10 +115,10 @@ where
     // type Query = (RTreeQuery<usize>, S::Query);
 
     fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<&'items I> {
-        println!("entering query left of: {:?}", self);
+        // println!("entering query left of: {:?}", self);
         let mut result = vec![];
         if min <= self.max_left {
-            println!("min <= max_left: {} <= {}", min, self.max_left);
+            // println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
                 self.right
                     .as_ref()
@@ -130,7 +132,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
-            println!("min > max_left: {} > {}", min, self.max_left);
+            // println!("min > max_left: {} > {}", min, self.max_left);
             result.extend(
                 self.right
                     .as_ref()
@@ -141,10 +143,10 @@ where
         result
     }
     fn query_right(&self, max: usize, inner_query: &S::Query) -> Vec<&'items I> {
-        println!("entering query right of: {:?}", self);
+        // println!("entering query right of: {:?}", self);
         let mut result = vec![];
         if self.max_left < max {
-            println!("max_left < max: {} < {}", self.max_left, max);
+            // println!("max_left < max: {} < {}", self.max_left, max);
             result.extend(
                 self.left
                     .as_ref()
@@ -158,7 +160,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
-            println!("max_left => max: {} < {}", self.max_left, max);
+            // println!("max_left => max: {} < {}", self.max_left, max);
             result.extend(
                 self.left
                     .as_ref()
@@ -170,12 +172,12 @@ where
     }
 
     fn build(items: &[&'items I], dim: usize) -> Self {
-        println!("building node at dim {} with items: {:?}", dim, items);
+        // println!("building node at dim {} with items: {:?}", dim, items);
         let sub_tree = S::build(items, dim + 1);
 
         if items.len() == 1 {
             let max_left = items[0].index(dim);
-            println!("max_left: {}", max_left);
+            // println!("max_left: {}", max_left);
             return Self {
                 left: None,
                 right: None,
@@ -188,7 +190,7 @@ where
         let median_index = (items.len() - 1) / 2;
         let median = &items[median_index];
         let max_left = median.index(dim);
-        println!("max_left: {}", max_left);
+        // println!("max_left: {}", max_left);
 
         let left = Box::new(Self::build(&items[..=median_index], dim));
         let right = Box::new(Self::build(&items[median_index + 1..], dim));
@@ -203,13 +205,13 @@ where
     }
 
     fn query(&self, query: &<RTree<'items, I, S> as Tree<'items, I>>::Query) -> Vec<&'items I> {
-        println!("entering query at: {:?}", self);
+        // println!("entering query at: {:?}", self);
         let my_query = &query.0;
 
-        println!(
-            "my_query.max <= self.max_left: {} <= {}",
-            my_query.max, self.max_left
-        );
+        // println!(
+        //     "my_query.max <= self.max_left: {} <= {}",
+        //     my_query.max, self.max_left
+        // );
         if my_query.max <= self.max_left {
             return self
                 .left
@@ -218,10 +220,10 @@ where
                 .unwrap_or_default();
         }
 
-        println!(
-            "self.max_left < my_query.min: {} < {}",
-            self.max_left, my_query.min
-        );
+        // println!(
+        //     "self.max_left < my_query.min: {} < {}",
+        //     self.max_left, my_query.min
+        // );
         if self.max_left < my_query.min {
             return self
                 .right
@@ -247,7 +249,7 @@ impl<'items, T: Item, S: Tree<'items, T> + Debug> Debug for RTreeNode<'items, T,
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Point {
     x: usize,
     y: usize,
@@ -309,4 +311,59 @@ fn test_2d_range_tree() {
     let result = tree.query(&query);
 
     assert_eq!(vec![&items[2]], result);
+}
+
+fn main() {
+    let point_count = 1_000_000;
+    let mut thread_rng = thread_rng();
+    let seed = thread_rng.gen();
+    println!("used seed {}", seed);
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    let between = Uniform::from(1..10000);
+
+    println!("generating points");
+    let points: Vec<_> = (0..point_count)
+        .map(|_| {
+            let x = between.sample(&mut rng);
+            let y = between.sample(&mut rng);
+            Point { x, y }
+        })
+        .collect();
+
+    println!("building tree");
+    let start = Instant::now();
+    let tree: RTree<Point, RTree<_>> = RTree::build(&points);
+    let end = Instant::now();
+    println!("Building tree took {}s", (end - start).as_secs_f64());
+
+    let x_query = RTreeQuery {
+        min: between.sample(&mut rng),
+        max: between.sample(&mut rng),
+    };
+    let y_query = RTreeQuery {
+        min: between.sample(&mut rng),
+        max: between.sample(&mut rng),
+    };
+
+    println!("precalculating expected results");
+    let start = Instant::now();
+    let expected: HashSet<_> = points
+        .iter()
+        .filter(|&p| {
+            x_query.min <= p.x && p.x < x_query.max && y_query.min <= p.y && p.y < y_query.max
+        })
+        .collect();
+    let end = Instant::now();
+    println!("precalc took {}s", (end - start).as_secs_f64());
+
+    println!("querying tree");
+    let start = Instant::now();
+    let query = (x_query, (y_query, ()));
+    let end = Instant::now();
+    println!("querying tree took {}s", (end - start).as_secs_f64());
+
+    let result: HashSet<_> = tree.query(&query).into_iter().collect();
+
+    assert_eq!(expected, result);
 }
