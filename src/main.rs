@@ -40,6 +40,8 @@ where
 //  4) profit
 //  OR simpler
 //  try Vec<&'items T> as Element
+
+#[derive(Debug)]
 pub struct Element<'items, T>(Vec<&'items T>);
 
 impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
@@ -54,6 +56,7 @@ impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
     }
 }
 
+#[derive(Debug)]
 pub struct RTree<'items, I, S = Element<'items, I>>
 where
     I: Item,
@@ -65,7 +68,7 @@ where
 impl<'items, I, S> RTree<'items, I, S>
 where
     I: Item,
-    S: Tree<'items, I>,
+    S: Tree<'items, I> + Debug,
 {
     fn build_internal(items: &[&'items I], dim: usize) -> Self {
         let mut items: Vec<&'items I> = items.to_vec();
@@ -83,7 +86,7 @@ where
 impl<'items, I, S> Tree<'items, I> for RTree<'items, I, S>
 where
     I: Item,
-    S: Tree<'items, I>,
+    S: Tree<'items, I> + Debug,
 {
     fn build(items: &[&'items I], dim: usize) -> Self {
         Self::build_internal(items, dim)
@@ -105,11 +108,12 @@ pub struct RTreeQuery<O: Ord> {
 impl<'items, I, S> RTreeNode<'items, I, S>
 where
     I: Item,
-    S: Tree<'items, I>,
+    S: Tree<'items, I> + Debug,
 {
     // type Query = (RTreeQuery<usize>, S::Query);
 
     fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<&'items I> {
+        println!("entering query left of: {:?}", self);
         let mut result = vec![];
         if min <= self.max_left {
             println!("min <= max_left: {} <= {}", min, self.max_left);
@@ -137,6 +141,7 @@ where
         result
     }
     fn query_right(&self, max: usize, inner_query: &S::Query) -> Vec<&'items I> {
+        println!("entering query right of: {:?}", self);
         let mut result = vec![];
         if self.max_left < max {
             println!("max_left < max: {} < {}", self.max_left, max);
@@ -165,7 +170,7 @@ where
     }
 
     fn build(items: &[&'items I], dim: usize) -> Self {
-        println!("building node with items: {:?}", items);
+        println!("building node at dim {} with items: {:?}", dim, items);
         let sub_tree = S::build(items, dim + 1);
 
         if items.len() == 1 {
@@ -198,9 +203,14 @@ where
     }
 
     fn query(&self, query: &<RTree<'items, I, S> as Tree<'items, I>>::Query) -> Vec<&'items I> {
+        println!("entering query at: {:?}", self);
         let my_query = &query.0;
 
-        if dbg!(my_query.max < self.max_left) {
+        println!(
+            "my_query.max <= self.max_left: {} <= {}",
+            my_query.max, self.max_left
+        );
+        if my_query.max <= self.max_left {
             return self
                 .left
                 .as_ref()
@@ -208,7 +218,11 @@ where
                 .unwrap_or_default();
         }
 
-        if dbg!(self.max_left < my_query.min) {
+        println!(
+            "self.max_left < my_query.min: {} < {}",
+            self.max_left, my_query.min
+        );
+        if self.max_left < my_query.min {
             return self
                 .right
                 .as_ref()
@@ -216,22 +230,24 @@ where
                 .unwrap_or_default();
         }
 
-        let mut left_trees = self
-            .left
-            .as_ref()
-            .map(|l| l.query_left(my_query.min, &query.1))
-            .unwrap_or_default();
-        let right_trees = self
-            .right
-            .as_ref()
-            .map(|r| r.query_right(my_query.max, &query.1))
-            .unwrap_or_default();
-        left_trees.extend(right_trees.into_iter());
-        left_trees
+        if let (Some(left), Some(right)) = (self.left.as_ref(), self.right.as_ref()) {
+            let mut left_trees = left.query_left(my_query.min, &query.1);
+            let right_trees = right.query_right(my_query.max, &query.1);
+            left_trees.extend(right_trees.into_iter());
+            left_trees
+        } else {
+            self.sub_tree.query(&query.1)
+        }
     }
 }
 
-#[derive(Clone, Debug)]
+impl<'items, T: Item, S: Tree<'items, T> + Debug> Debug for RTreeNode<'items, T, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.sub_tree)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Point {
     x: usize,
     y: usize,
@@ -273,4 +289,24 @@ fn test_1d_range_tree() {
     result.sort();
 
     assert_eq!(vec![&items[1], &items[2]], result);
+}
+
+#[test]
+fn test_2d_range_tree() {
+    let items = [
+        Point { x: 1, y: 2 },
+        Point { x: 3, y: 4 },
+        Point { x: 2, y: 1 },
+        Point { x: 4, y: 2 },
+    ];
+
+    let tree: RTree<Point, RTree<_>> = RTree::build(&items);
+    let query = (
+        RTreeQuery { min: 2, max: 3 },
+        (RTreeQuery { min: 1, max: 2 }, ()),
+    );
+
+    let result = tree.query(&query);
+
+    assert_eq!(vec![&items[2]], result);
 }
