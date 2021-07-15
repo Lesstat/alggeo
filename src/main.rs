@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::marker::PhantomData;
+use std::{fmt::Debug, marker::PhantomData};
 
 fn main() {
     println!("Hello, world!");
@@ -16,7 +16,7 @@ where
     fn query(&self, query: &Self::Query) -> Vec<&'items I>;
 }
 
-pub trait Item: Clone {
+pub trait Item: Debug {
     fn index(&self, i: usize) -> usize;
     fn max_dim() -> usize;
 }
@@ -42,13 +42,14 @@ where
 //  try Vec<&'items T> as Element
 pub struct Element<'items, T>(Vec<&'items T>);
 
-impl<'items, I: Clone> Tree<'items, I> for Element<'items, I> {
+impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
     type Query = ();
     fn build(items: &[&'items I], _dim: usize) -> Self {
         Element(items.to_vec())
     }
 
     fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
+        println!("adding {:?} to output", self.0);
         self.0.clone()
     }
 }
@@ -67,7 +68,7 @@ where
     S: Tree<'items, I>,
 {
     fn build_internal(items: &[&'items I], dim: usize) -> Self {
-        let mut items: Vec<&'items I> = items.iter().copied().collect();
+        let mut items: Vec<&'items I> = items.to_vec();
         items.sort_by_key(|i| i.index(dim));
         let head = RTreeNode::build(&items, dim);
         RTree { head }
@@ -111,6 +112,7 @@ where
     fn query_left(&self, min: usize, inner_query: &S::Query) -> Vec<&'items I> {
         let mut result = vec![];
         if min <= self.max_left {
+            println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
                 self.right
                     .as_ref()
@@ -124,6 +126,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
+            println!("min > max_left: {} > {}", min, self.max_left);
             result.extend(
                 self.right
                     .as_ref()
@@ -136,6 +139,7 @@ where
     fn query_right(&self, max: usize, inner_query: &S::Query) -> Vec<&'items I> {
         let mut result = vec![];
         if self.max_left < max {
+            println!("max_left < max: {} < {}", self.max_left, max);
             result.extend(
                 self.left
                     .as_ref()
@@ -149,6 +153,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
+            println!("max_left => max: {} < {}", self.max_left, max);
             result.extend(
                 self.left
                     .as_ref()
@@ -160,14 +165,25 @@ where
     }
 
     fn build(items: &[&'items I], dim: usize) -> Self {
+        println!("building node with items: {:?}", items);
         let sub_tree = S::build(items, dim + 1);
+
         if items.len() == 1 {
-            // TODO: no sub tree recursion
+            let max_left = items[0].index(dim);
+            println!("max_left: {}", max_left);
+            return Self {
+                left: None,
+                right: None,
+                max_left,
+                sub_tree,
+                _t: PhantomData,
+            };
         }
 
-        let median_index = items.len() / 2;
+        let median_index = (items.len() - 1) / 2;
         let median = &items[median_index];
         let max_left = median.index(dim);
+        println!("max_left: {}", max_left);
 
         let left = Box::new(Self::build(&items[..=median_index], dim));
         let right = Box::new(Self::build(&items[median_index + 1..], dim));
@@ -184,7 +200,7 @@ where
     fn query(&self, query: &<RTree<'items, I, S> as Tree<'items, I>>::Query) -> Vec<&'items I> {
         let my_query = &query.0;
 
-        if my_query.max < self.max_left {
+        if dbg!(my_query.max < self.max_left) {
             return self
                 .left
                 .as_ref()
@@ -192,7 +208,7 @@ where
                 .unwrap_or_default();
         }
 
-        if self.max_left < my_query.min {
+        if dbg!(self.max_left < my_query.min) {
             return self
                 .right
                 .as_ref()
@@ -200,14 +216,22 @@ where
                 .unwrap_or_default();
         }
 
-        let mut left_trees = self.query_left(my_query.min, &query.1);
-        let right_trees = self.query_right(my_query.max, &query.1);
+        let mut left_trees = self
+            .left
+            .as_ref()
+            .map(|l| l.query_left(my_query.min, &query.1))
+            .unwrap_or_default();
+        let right_trees = self
+            .right
+            .as_ref()
+            .map(|r| r.query_right(my_query.max, &query.1))
+            .unwrap_or_default();
         left_trees.extend(right_trees.into_iter());
         left_trees
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Point {
     x: usize,
     y: usize,
@@ -242,9 +266,11 @@ impl Item for usize {
 fn test_1d_range_tree() {
     let items = [1usize, 3, 5, 7, 8, 9];
 
-    let tree = RTree::<usize>::build(&items);
+    let tree: RTree<usize, Element<usize>> = RTree::build(&items);
     let query = RTreeQuery { min: 2, max: 6 };
-    let result = tree.head.query(&(query, ()));
+    let mut result = tree.head.query(&(query, ()));
+
+    result.sort();
 
     assert_eq!(vec![&items[1], &items[2]], result);
 }
