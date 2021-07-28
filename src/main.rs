@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{collections::HashSet, fmt::Debug, marker::PhantomData, time::Instant};
+use std::{collections::HashSet, fmt::Debug, iter::Copied, marker::PhantomData, time::Instant};
 
 use rand::{
     distributions::Uniform,
@@ -9,14 +9,16 @@ use rand::{
 };
 use smallvec::SmallVec;
 
-pub trait Tree<'items, I>
+pub trait Tree<'items, 'me, I: 'items>
 where
-    Self: 'items,
+    Self: 'me,
 {
     type Query;
+    type QueryIter: Iterator<Item = &'items I>;
 
     fn build(items: &[&'items I], dim: usize) -> Self;
     fn query(&self, query: &Self::Query) -> Vec<&'items I>;
+    fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter;
 }
 
 pub trait Item: Debug {
@@ -24,31 +26,28 @@ pub trait Item: Debug {
     fn max_dim() -> usize;
 }
 
-struct RTreeNode<'items, T, S = Element<'items, T>>
+struct RTreeNode<'items, 'me, T, S = Element<'items, T>>
 where
     T: Item,
-    S: Tree<'items, T>,
+    S: Tree<'items, 'me, T>,
 {
     left: Option<Box<Self>>,
     max_left: usize,
     sub_tree: S,
     right: Option<Box<Self>>,
-    _t: PhantomData<&'items T>,
+    _t: PhantomData<(&'me T, &'items T)>,
 }
-
-// TODO how to resolve liftimes within Trees:
-//  1) raw point in Element in Tree::items
-//  2) Tree::items never move b/c all Trees are not unpin
-//  3) that would delete 'tree everywhere
-//  4) profit
-//  OR simpler
-//  try Vec<&'items T> as Element
 
 #[derive(Debug)]
 pub struct Element<'items, I>(SmallVec<[&'items I; 2]>);
 
-impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
+impl<'items, 'me, I: Debug> Tree<'items, 'me, I> for Element<'items, I>
+where
+    'items: 'me,
+{
     type Query = ();
+    type QueryIter = Copied<std::slice::Iter<'me, &'items I>>;
+
     fn build(items: &[&'items I], _dim: usize) -> Self {
         Element(items.into())
     }
@@ -56,21 +55,25 @@ impl<'items, I: Debug> Tree<'items, I> for Element<'items, I> {
     fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
         self.0.to_vec()
     }
+    fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter {
+        self.0.iter().copied()
+    }
 }
 
 #[derive(Debug)]
-pub struct RTree<'items, I, S = Element<'items, I>>
+pub struct RTree<'items, 'me, I, S = Element<'items, I>>
 where
     I: Item,
-    S: Tree<'items, I>,
+    S: Tree<'items, 'me, I>,
 {
-    head: RTreeNode<'items, I, S>,
+    head: RTreeNode<'items, 'me, I, S>,
 }
 
-impl<'items, I, S> RTree<'items, I, S>
+impl<'items, 'me, I, S> RTree<'items, 'me, I, S>
 where
+    'items: 'me,
     I: Item,
-    S: Tree<'items, I> + Debug,
+    S: Tree<'items, 'me, I> + Debug,
 {
     fn build_internal(items: &[&'items I], dim: usize) -> Self {
         let mut items: Vec<&'items I> = items.to_vec();
@@ -85,32 +88,80 @@ where
     }
 }
 
-impl<'items, I, S> Tree<'items, I> for RTree<'items, I, S>
+pub struct RTreeIter<'items, 'me, I: Item, S: Tree<'items, 'me, I> + Debug> {
+    left: Option<&'me RTreeNode<'items, 'me, I, S>>,
+    right: Option<&'me RTreeNode<'items, 'me, I, S>>,
+    inner_iter: Option<S::QueryIter>,
+    query: <RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
+}
+
+impl<'items, 'me, I, S> Iterator for RTreeIter<'items, 'me, I, S>
 where
     I: Item,
-    S: Tree<'items, I> + Debug,
+    S: Tree<'items, 'me, I> + Debug,
 {
+    type Item = &'items I;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (RTreeQuery { min, max }, inner_query) = &self.query;
+        loop {
+            match (self.inner_iter.as_mut(), self.left, self.right) {
+                (Some(ref mut iter), _, _) => break iter.next(),
+                (None, ref mut node @ Some(_), _) => {
+                    let left: &RTreeNode<'_, '_, _, _> = node.unwrap();
+                    if left.max_left < *min {
+                        *node = left.right.as_ref().map(|b| b.as_ref());
+                    } else {
+                        self.inner_iter =
+                            left.right.as_ref()
+                                .map(|r| r.sub_tree.iter_query(inner_query));
+                        *node = left.left.as_ref().map(|b| b.as_ref());
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+    }
+}
+
+impl<'me, 'items, S, I> Tree<'items, 'me, I> for RTree<'items, 'me, I, S>
+where
+    'items: 'me,
+    I: Item,
+    S: Tree<'items, 'me, I> + Debug,
+{
+    type Query = (RTreeQuery<usize>, S::Query);
+    type QueryIter = RTreeIter<'items, 'me, I, S>;
+
     fn build(items: &[&'items I], dim: usize) -> Self {
         Self::build_internal(items, dim)
     }
     fn query(&self, query: &Self::Query) -> Vec<&'items I> {
         self.head.query(query)
     }
-
-    type Query = (RTreeQuery<usize>, S::Query);
+    fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter {
+        todo!()
+    }
 }
 
-// RTreeNode<Point, TreapNode>::new(&[])
-//
 pub struct RTreeQuery<O: Ord> {
     min: O,
     max: O,
 }
 
-impl<'items, I, S> RTreeNode<'items, I, S>
+enum SplitResult<'items, 'me, I: Item, S: Tree<'items, 'me, I>> {
+    Split {
+        left: &'me RTreeNode<'items, 'me, I, S>,
+        right: &'me RTreeNode<'items, 'me, I, S>,
+    },
+    Final(S::QueryIter),
+}
+
+impl<'items, 'me, I, S> RTreeNode<'items, 'me, I, S>
 where
+    'items: 'me,
     I: Item,
-    S: Tree<'items, I> + Debug,
+    S: Tree<'items, 'me, I> + Debug,
 {
     // type Query = (RTreeQuery<usize>, S::Query);
 
@@ -204,7 +255,40 @@ where
         }
     }
 
-    fn query(&self, query: &<RTree<'items, I, S> as Tree<'items, I>>::Query) -> Vec<&'items I> {
+    fn split(
+        &'me self,
+        query: &<RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
+    ) -> Option<SplitResult<'items, 'me, I, S>> {
+        // println!("entering query at: {:?}", self);
+        let my_query = &query.0;
+
+        // println!(
+        //     "my_query.max <= self.max_left: {} <= {}",
+        //     my_query.max, self.max_left
+        // );
+        if my_query.max <= self.max_left {
+            return self.left.as_ref().and_then(|l| l.split(query));
+        }
+
+        // println!(
+        //     "self.max_left < my_query.min: {} < {}",
+        //     self.max_left, my_query.min
+        // );
+        if self.max_left < my_query.min {
+            return self.right.as_ref().and_then(|r| r.split(query));
+        }
+
+        if let (Some(left), Some(right)) = (self.left.as_ref(), self.right.as_ref()) {
+            Some(SplitResult::Split { left, right })
+        } else {
+            Some(SplitResult::Final(self.sub_tree.iter_query(&query.1)))
+        }
+    }
+
+    fn query(
+        &self,
+        query: &<RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
+    ) -> Vec<&'items I> {
         // println!("entering query at: {:?}", self);
         let my_query = &query.0;
 
@@ -243,7 +327,7 @@ where
     }
 }
 
-impl<'items, T: Item, S: Tree<'items, T> + Debug> Debug for RTreeNode<'items, T, S> {
+impl<'items, 'me, T: Item, S: Tree<'items, 'me, T> + Debug> Debug for RTreeNode<'items, 'me, T, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.sub_tree)
     }
