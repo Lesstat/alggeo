@@ -13,7 +13,7 @@ pub trait Tree<'items, 'me, I: 'items>
 where
     Self: 'me,
 {
-    type Query;
+    type Query: Clone;
     type QueryIter: Iterator<Item = &'items I>;
 
     fn build(items: &[&'items I], dim: usize) -> Self;
@@ -38,6 +38,20 @@ where
     _t: PhantomData<(&'me T, &'items T)>,
 }
 
+impl<'items, 'me, T, S> RTreeNode<'items, 'me, T, S>
+where
+    T: Item,
+    S: Tree<'items, 'me, T>,
+{
+    fn left(&self) -> Option<&Self> {
+        self.left.as_ref().map(|b| b.as_ref())
+    }
+
+    fn right(&self) -> Option<&Self> {
+        self.right.as_ref().map(|b| b.as_ref())
+    }
+}
+
 #[derive(Debug)]
 pub struct Element<'items, I>(SmallVec<[&'items I; 2]>);
 
@@ -55,7 +69,7 @@ where
     fn query(&self, _query: &Self::Query) -> Vec<&'items I> {
         self.0.to_vec()
     }
-    fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter {
+    fn iter_query(&'me self, _: &Self::Query) -> Self::QueryIter {
         self.0.iter().copied()
     }
 }
@@ -95,6 +109,30 @@ pub struct RTreeIter<'items, 'me, I: Item, S: Tree<'items, 'me, I> + Debug> {
     query: <RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
 }
 
+impl<'items, 'me, I: Item, S: Tree<'items, 'me, I> + Debug> RTreeIter<'items, 'me, I, S> {
+    fn new(
+        left: Option<&'me RTreeNode<'items, 'me, I, S>>,
+        right: Option<&'me RTreeNode<'items, 'me, I, S>>,
+        query: <RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
+    ) -> Self {
+        Self {
+            left,
+            right,
+            inner_iter: None,
+            query,
+        }
+    }
+    fn empty(query: <RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query) -> Self {
+        println!("returning empty iter");
+        Self {
+            left: None,
+            right: None,
+            inner_iter: None,
+            query,
+        }
+    }
+}
+
 impl<'items, 'me, I, S> Iterator for RTreeIter<'items, 'me, I, S>
 where
     I: Item,
@@ -105,20 +143,53 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let (RTreeQuery { min, max }, inner_query) = &self.query;
         loop {
+            println!(
+                "iter state: inner: {:?}, left: {:?}, right: {:?}",
+                self.inner_iter.is_some(),
+                self.left,
+                self.right
+            );
             match (self.inner_iter.as_mut(), self.left, self.right) {
-                (Some(ref mut iter), _, _) => break iter.next(),
-                (None, ref mut node @ Some(_), _) => {
-                    let left: &RTreeNode<'_, '_, _, _> = node.unwrap();
-                    if left.max_left < *min {
-                        *node = left.right.as_ref().map(|b| b.as_ref());
+                // We still have elements in the inner iter
+                (Some(ref mut iter), _, _) => {
+                    println!("return element from inner iter");
+                    if let Some(it) = iter.next() {
+                        println!("coming back with {:?}", it);
+                        break Some(it);
                     } else {
-                        self.inner_iter =
-                            left.right.as_ref()
-                                .map(|r| r.sub_tree.iter_query(inner_query));
-                        *node = left.left.as_ref().map(|b| b.as_ref());
+                        println!("inner iter is empty");
+                        self.inner_iter = None;
                     }
                 }
-                _ => todo!(),
+                // No elements in inner iter, try to go left
+                (None, Some(left), _) => {
+                    if left.max_left < *min {
+                        println!("expanding left side to the right in iter");
+                        self.left = left.right();
+                    } else {
+                        println!("expanding left side to the left in iter");
+                        self.inner_iter = left
+                            .right
+                            .as_ref()
+                            .map(|r| r.sub_tree.iter_query(inner_query));
+                        self.left = left.left();
+                    }
+                }
+
+                (None, None, Some(right)) => {
+                    if *max <= right.max_left {
+                        println!("expanding right side to the left in iter");
+                        self.right = right.left();
+                    } else {
+                        println!("expanding right side to the right in iter");
+                        self.inner_iter = right
+                            .left
+                            .as_ref()
+                            .map(|r| r.sub_tree.iter_query(inner_query));
+                        self.right = right.right();
+                    }
+                }
+                (None, None, None) => break None,
             }
         }
     }
@@ -140,10 +211,38 @@ where
         self.head.query(query)
     }
     fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter {
-        todo!()
+        let mut cur = &self.head;
+        let my_query = &query.0;
+
+        loop {
+            if my_query.max <= cur.max_left {
+                if let Some(left) = cur.left() {
+                    println!("going down and left");
+                    cur = left;
+                    continue;
+                } else {
+                    return RTreeIter::empty(query.clone());
+                }
+            }
+
+            if cur.max_left < my_query.min {
+                if let Some(right) = cur.right() {
+                    println!("going down and right");
+                    cur = right;
+                    continue;
+                } else {
+                    return RTreeIter::empty(query.clone());
+                }
+            }
+            println!("starting iteration at {:?}", cur);
+            break;
+        }
+
+        RTreeIter::new(cur.left(), cur.right(), query.clone())
     }
 }
 
+#[derive(Clone)]
 pub struct RTreeQuery<O: Ord> {
     min: O,
     max: O,
@@ -397,8 +496,41 @@ fn test_2d_range_tree() {
     assert_eq!(vec![&items[2]], result);
 }
 
+#[test]
+fn test_1d_range_tree_iter() {
+    let items = [1usize, 3, 5, 7, 8, 9];
+
+    let tree: RTree<usize, Element<usize>> = RTree::build(&items);
+    let query = RTreeQuery { min: 2, max: 6 };
+    let mut result: Vec<_> = tree.iter_query(&(query, ())).collect();
+
+    result.sort();
+
+    assert_eq!(vec![&items[1], &items[2]], result);
+}
+
+#[test]
+fn test_2d_range_tree_iter() {
+    let items = [
+        Point { x: 1, y: 2 },
+        Point { x: 3, y: 4 },
+        Point { x: 2, y: 1 },
+        Point { x: 4, y: 2 },
+    ];
+
+    let tree: RTree<Point, RTree<_>> = RTree::build(&items);
+    let query = (
+        RTreeQuery { min: 2, max: 3 },
+        (RTreeQuery { min: 1, max: 2 }, ()),
+    );
+
+    let result: Vec<_> = tree.iter_query(&query).collect();
+
+    assert_eq!(vec![&items[2]], result);
+}
+
 fn main() {
-    let point_count = 1_000_000;
+    let point_count = 10; //1_000_000;
     let mut thread_rng = thread_rng();
     let seed = thread_rng.gen();
     println!("used seed {}", seed);
@@ -454,11 +586,24 @@ fn main() {
 
     println!("querying tree");
     let start = Instant::now();
-    let query = (x_query, (y_query, ()));
+    let query = (x_query.clone(), (y_query.clone(), ()));
     let result = tree.query(&query);
     let end = Instant::now();
     println!(
         "querying tree for {} elements took {}s",
+        result.len(),
+        (end - start).as_secs_f64()
+    );
+
+    assert_eq!(expected, result.into_iter().collect());
+
+    println!("querying tree with iterator");
+    let start = Instant::now();
+    let query = (x_query, (y_query, ()));
+    let result = tree.iter_query(&query).collect::<Vec<_>>();
+    let end = Instant::now();
+    println!(
+        "querying tree with iterator for {} elements took {}s",
         result.len(),
         (end - start).as_secs_f64()
     );
