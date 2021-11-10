@@ -536,11 +536,10 @@ fn test_2d_range_tree_iter() {
     assert_eq!(vec![&items[2]], result);
 }
 
-fn main() {
-    let point_count = 500_000; //1_000_000;
+fn perf_test(point_count: usize) -> (f64, f64, usize) {
     let mut thread_rng = thread_rng();
     let seed = thread_rng.gen();
-    println!("used seed {}", seed);
+    println!("used seed {} for {} elems", seed, point_count);
 
     let mut rng = StdRng::seed_from_u64(seed);
     let between = Uniform::from(1..100);
@@ -583,10 +582,11 @@ fn main() {
         })
         .collect();
     let end = Instant::now();
+    let brute_time =  (end - start).as_secs_f64();
     println!(
         "precalc for {} elments took {}s",
         expected.len(),
-        (end - start).as_secs_f64()
+        brute_time,
     );
 
     let expected: HashSet<_> = expected.into_iter().collect();
@@ -609,11 +609,22 @@ fn main() {
     let query = (x_query, (y_query, ()));
     let result = tree.iter_query(&query).collect::<Vec<_>>();
     let end = Instant::now();
+    let query_time =  (end - start).as_secs_f64();
     println!(
         "querying tree with iterator for {} elements took {}s",
         result.len(),
-        (end - start).as_secs_f64()
+        query_time,
     );
 
+    let result_len = result.len();
     assert_eq!(expected, result.into_iter().collect());
+
+    (brute_time, query_time, result_len)
+}
+
+fn main() {
+    let res: Vec<_> = (10..=19).map(|i| (1 << i, perf_test(1 << i))).collect();
+    for (i, (a, b, len)) in res {
+      println!("{:08} ({:08}) | {:0.10} {:0.10} {:0.10}", i, len, a, b, b/a)
+    }
 }
