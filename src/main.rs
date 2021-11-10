@@ -123,7 +123,7 @@ impl<'items, 'me, I: Item, S: Tree<'items, 'me, I> + Debug> RTreeIter<'items, 'm
         }
     }
     fn empty(query: <RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query) -> Self {
-        println!("returning empty iter");
+        //println!("returning empty iter");
         Self {
             left: None,
             right: None,
@@ -143,49 +143,51 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let (RTreeQuery { min, max }, inner_query) = &self.query;
         loop {
-            println!(
-                "iter state: inner: {:?}, left: {:?}, right: {:?}",
-                self.inner_iter.is_some(),
-                self.left,
-                self.right
-            );
+            //println!(
+            //    "iter state: inner: {:?}, left: {:?}, right: {:?}",
+            //    self.inner_iter.is_some(),
+            //    self.left,
+            //    self.right
+            //);
             match (self.inner_iter.as_mut(), self.left, self.right) {
                 // We still have elements in the inner iter
                 (Some(ref mut iter), _, _) => {
-                    println!("return element from inner iter");
+                    //println!("return element from inner iter");
                     if let Some(it) = iter.next() {
-                        println!("coming back with {:?}", it);
+                        //println!("coming back with {:?}", it);
                         break Some(it);
                     } else {
-                        println!("inner iter is empty");
+                        //println!("inner iter is empty");
                         self.inner_iter = None;
                     }
                 }
                 // No elements in inner iter, try to go left
                 (None, Some(left), _) => {
                     if left.max_left < *min {
-                        println!("expanding left side to the right in iter");
+                        //println!("expanding left side to the right in iter");
                         self.left = left.right();
                     } else {
-                        println!("expanding left side to the left in iter");
-                        self.inner_iter = left
+                        //println!("expanding left side to the left in iter");
+                        self.inner_iter = Some(left
                             .right
                             .as_ref()
-                            .map(|r| r.sub_tree.iter_query(inner_query));
+                            .map(|r| r.sub_tree.iter_query(inner_query))
+                            .unwrap_or_else(|| left.sub_tree.iter_query(inner_query)));
                         self.left = left.left();
                     }
                 }
 
                 (None, None, Some(right)) => {
                     if *max <= right.max_left {
-                        println!("expanding right side to the left in iter");
+                        //println!("expanding right side to the left in iter");
                         self.right = right.left();
                     } else {
-                        println!("expanding right side to the right in iter");
-                        self.inner_iter = right
+                        //println!("expanding right side to the right in iter");
+                        self.inner_iter = Some(right
                             .left
                             .as_ref()
-                            .map(|r| r.sub_tree.iter_query(inner_query));
+                            .map(|r| r.sub_tree.iter_query(inner_query))
+                            .unwrap_or_else(|| right.sub_tree.iter_query(inner_query)));
                         self.right = right.right();
                     }
                 }
@@ -217,7 +219,7 @@ where
         loop {
             if my_query.max <= cur.max_left {
                 if let Some(left) = cur.left() {
-                    println!("going down and left");
+                    //println!("going down and left");
                     cur = left;
                     continue;
                 } else {
@@ -227,18 +229,23 @@ where
 
             if cur.max_left < my_query.min {
                 if let Some(right) = cur.right() {
-                    println!("going down and right");
+                    //println!("going down and right");
                     cur = right;
                     continue;
                 } else {
                     return RTreeIter::empty(query.clone());
                 }
             }
-            println!("starting iteration at {:?}", cur);
+            //println!("starting iteration at {:?}", cur);
             break;
         }
 
-        RTreeIter::new(cur.left(), cur.right(), query.clone())
+        if cur.left().is_none() || cur.right().is_none() {
+            assert!(cur.left().is_none() && cur.right().is_none());
+            RTreeIter::new(Some(cur), None, query.clone())
+        } else {
+            RTreeIter::new(cur.left(), cur.right(), query.clone())
+        }
     }
 }
 
@@ -530,7 +537,7 @@ fn test_2d_range_tree_iter() {
 }
 
 fn main() {
-    let point_count = 10; //1_000_000;
+    let point_count = 500_000; //1_000_000;
     let mut thread_rng = thread_rng();
     let seed = thread_rng.gen();
     println!("used seed {}", seed);
