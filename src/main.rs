@@ -52,6 +52,31 @@ where
     }
 }
 
+struct FCElement<'items, T> {
+    elem: &'items T,
+    left: usize,
+    right: usize,
+}
+
+struct FCRTreeNode<'items, 'me, T>
+where
+    T: Item,
+{
+    left: Option<Box<Self>>,
+    max_left: usize,
+    elements: Vec<FCElement<'items, T>>,
+    // query.min, query.max
+    // start = elements.binary_search(query.min)
+    // end = elements.binary_search(query.max)
+    // yield return elemnts[start..end]
+    // ...
+    // left.query(start.left, end.left)
+    // ...
+
+    right: Option<Box<Self>>,
+    _t: PhantomData<(&'me T, &'items T)>,
+}
+
 #[derive(Debug)]
 pub struct Element<'items, I>(SmallVec<[&'items I; 2]>);
 
@@ -89,17 +114,17 @@ where
     I: Item,
     S: Tree<'items, 'me, I> + Debug,
 {
-    fn build_internal(items: &[&'items I], dim: usize) -> Self {
-        let mut items: Vec<&'items I> = items.to_vec();
-        items.sort_by_key(|i| i.index(dim));
-        let head = RTreeNode::build(&items, dim);
-        RTree { head }
-    }
-
     fn build(items: &'items [I]) -> Self {
         let items: Vec<_> = items.iter().collect();
         Tree::build(&items, 0)
     }
+}
+
+pub struct FCRTree<'items, 'me, I>
+where
+    I: Item,
+{
+    head: FCRTreeNode<'items, 'me, I>,
 }
 
 pub struct RTreeIter<'items, 'me, I: Item, S: Tree<'items, 'me, I> + Debug> {
@@ -208,7 +233,10 @@ where
     type QueryIter = RTreeIter<'items, 'me, I, S>;
 
     fn build(items: &[&'items I], dim: usize) -> Self {
-        Self::build_internal(items, dim)
+        let mut items: Vec<&'items I> = items.to_vec();
+        items.sort_by_key(|i| i.index(dim));
+        let head = RTreeNode::build(&items, dim);
+        RTree { head }
     }
     fn query(&self, query: &Self::Query) -> Vec<&'items I> {
         self.head.query(query)
@@ -250,18 +278,29 @@ where
     }
 }
 
+impl<'me, 'items, I> Tree<'items, 'me, I> for FCRTree<'items, 'me, I>
+where
+    'items: 'me,
+    I: Item,
+{
+    type Query = (RTreeQuery<usize>, RTreeQuery<usize>);
+    type QueryIter = RTreeIter<'items, 'me, I>;
+
+    fn build(items: &[&'items I], dim: usize) -> Self {
+        unimplemented!();
+    }
+    fn query(&self, query: &Self::Query) -> Vec<&'items I> {
+        self.head.query(query)
+    }
+    fn iter_query(&'me self, query: &Self::Query) -> Self::QueryIter {
+        unimplemented!();
+    }
+}
+
 #[derive(Clone)]
 pub struct RTreeQuery<O: Ord> {
     min: O,
     max: O,
-}
-
-enum SplitResult<'items, 'me, I: Item, S: Tree<'items, 'me, I>> {
-    Split {
-        left: &'me RTreeNode<'items, 'me, I, S>,
-        right: &'me RTreeNode<'items, 'me, I, S>,
-    },
-    Final(S::QueryIter),
 }
 
 impl<'items, 'me, I, S> RTreeNode<'items, 'me, I, S>
@@ -356,36 +395,6 @@ where
         }
     }
 
-    fn split(
-        &'me self,
-        query: &<RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
-    ) -> Option<SplitResult<'items, 'me, I, S>> {
-        // println!("entering query at: {:?}", self);
-        let my_query = &query.0;
-
-        // println!(
-        //     "my_query.max <= self.max_left: {} <= {}",
-        //     my_query.max, self.max_left
-        // );
-        if my_query.max <= self.max_left {
-            return self.left().and_then(|l| l.split(query));
-        }
-
-        // println!(
-        //     "self.max_left < my_query.min: {} < {}",
-        //     self.max_left, my_query.min
-        // );
-        if self.max_left < my_query.min {
-            return self.right().and_then(|r| r.split(query));
-        }
-
-        if let (Some(left), Some(right)) = (self.left(), self.right()) {
-            Some(SplitResult::Split { left, right })
-        } else {
-            Some(SplitResult::Final(self.sub_tree.iter_query(&query.1)))
-        }
-    }
-
     fn query(
         &self,
         query: &<RTree<'items, 'me, I, S> as Tree<'items, 'me, I>>::Query,
@@ -412,6 +421,121 @@ where
         if let (Some(left), Some(right)) = (self.left(), self.right()) {
             let mut left_trees = left.query_left(my_query.min, &query.1);
             let right_trees = right.query_right(my_query.max, &query.1);
+            left_trees.extend(right_trees.into_iter());
+            left_trees
+        } else {
+            self.sub_tree.query(&query.1)
+        }
+    }
+}
+
+impl<'items, 'me, I> FCRTreeNode<'items, 'me, I>
+where
+    'items: 'me,
+    I: Item,
+{
+    fn query_left(&self, min: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
+        // println!("entering query left of: {:?}", self);
+        let start = self.elements[start_hint];
+        let end = self.elements[end_hint];
+        let mut result = vec![];
+        if min <= self.max_left {
+            // println!("min <= max_left: {} <= {}", min, self.max_left);
+            result.extend(
+                self.right
+                    .map(|r| r.elements[start.right..end.right].map(|e| e.elem))
+                    .urwrap_or_default()
+            );
+            result.extend(
+                self.left()
+                    .map(|l| l.query_left(min, start.left, start.left))
+                    .unwrap_or_default(),
+            );
+        } else {
+            // println!("min > max_left: {} > {}", min, self.max_left);
+            result.extend(
+                self.right()
+                    .map(|l| l.query_left(min, start.right, start.right))
+                    .unwrap_or_default(),
+            );
+        }
+        result
+    }
+    fn query_right(&self, max: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
+        // println!("entering query left of: {:?}", self);
+        let start = self.elements[start_hint];
+        let end = self.elements[end_hint];
+        let mut result = vec![];
+        if self.max_left < max {
+            // println!("min <= max_left: {} <= {}", min, self.max_left);
+            result.extend(
+                self.left
+                    .map(|r| r.elements[start.left..end.left].map(|e| e.elem))
+                    .urwrap_or_default()
+            );
+            result.extend(
+                self.right()
+                    .map(|l| l.query_right(max, start.right, start.right))
+                    .unwrap_or_default(),
+            );
+        } else {
+            // println!("min > max_left: {} > {}", min, self.max_left);
+            result.extend(
+                self.left()
+                    .map(|l| l.query_right(max, start.left, start.left))
+                    .unwrap_or_default(),
+            );
+        }
+        result
+    }
+
+    fn build(items: &[&'items I], dim: usize) -> Self {
+        unimplemented!()
+    }
+
+    fn query(
+        &self,
+        query: &<FCRTree<'items, 'me, I> as Tree<'items, 'me, I>>::Query,
+    ) -> Vec<&'items I> {
+        // println!("entering query at: {:?}", self);
+        let my_query = &query.0;
+        let lower_query = &query.1;
+
+        // println!(
+        //     "my_query.max <= self.max_left: {} <= {}",
+        //     my_query.max, self.max_left
+        // );
+        if my_query.max <= self.max_left {
+            return self.left().map(|l| l.query(query)).unwrap_or_default();
+        }
+
+        // println!(
+        //     "self.max_left < my_query.min: {} < {}",
+        //     self.max_left, my_query.min
+        // );
+        if self.max_left < my_query.min {
+            return self.right().map(|r| r.query(query)).unwrap_or_default();
+        }
+
+        let res = self.elements.binary_search_by_key(lower_query.min, |e| e.elem.index(e.elem.max_dim() - 1));
+        let start_hint = match res {
+            Error(idx) => idx,
+            Ok(idx) => self.elements[..idx].rev()
+                .enumerate().skip_while(|(i, e)| e.elem == query.min)
+                .map(|(i,e)| idx - i + 1).next()
+        };
+        let res = self.elements.binary_search_by_key(lower_query.max, |e| e.elem.index(e.elem.max_dim() - 1));
+        let end_hint = match res {
+            Error(idx) => idx,
+            Ok(idx) => self.elements[idx..]
+                .enumerate().skip_while(|(i, e)| e.elem == query.max)
+                .map(|(i,e)| idx + i).next()
+        };
+        let start = self.elements[start_hint];
+        let end = self.elements[end_hint];
+        if let (Some(left), Some(right)) = (self.left(), self.right()) {
+            let mut left_trees = left.query_left(my_query.min, start.left, end.left);
+            let right_trees = right.query_right(my_query.max, start.right, end.right);
             left_trees.extend(right_trees.into_iter());
             left_trees
         } else {
