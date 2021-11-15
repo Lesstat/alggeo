@@ -168,11 +168,11 @@ where
                         self.left = left.right();
                     } else {
                         //println!("expanding left side to the left in iter");
-                        self.inner_iter = Some(left
-                            .right
-                            .as_ref()
-                            .map(|r| r.sub_tree.iter_query(inner_query))
-                            .unwrap_or_else(|| left.sub_tree.iter_query(inner_query)));
+                        self.inner_iter = Some(
+                            left.right()
+                                .map(|r| r.sub_tree.iter_query(inner_query))
+                                .unwrap_or_else(|| left.sub_tree.iter_query(inner_query)),
+                        );
                         self.left = left.left();
                     }
                 }
@@ -183,11 +183,12 @@ where
                         self.right = right.left();
                     } else {
                         //println!("expanding right side to the right in iter");
-                        self.inner_iter = Some(right
-                            .left
-                            .as_ref()
-                            .map(|r| r.sub_tree.iter_query(inner_query))
-                            .unwrap_or_else(|| right.sub_tree.iter_query(inner_query)));
+                        self.inner_iter = Some(
+                            right
+                                .left()
+                                .map(|r| r.sub_tree.iter_query(inner_query))
+                                .unwrap_or_else(|| right.sub_tree.iter_query(inner_query)),
+                        );
                         self.right = right.right();
                     }
                 }
@@ -277,22 +278,19 @@ where
         if min <= self.max_left {
             // println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
-                self.right
-                    .as_ref()
+                self.right()
                     .map(|r| r.sub_tree.query(inner_query))
                     .unwrap_or_else(|| self.sub_tree.query(inner_query)),
             );
             result.extend(
-                self.left
-                    .as_ref()
+                self.left()
                     .map(|l| l.query_left(min, inner_query))
                     .unwrap_or_default(),
             );
         } else {
             // println!("min > max_left: {} > {}", min, self.max_left);
             result.extend(
-                self.right
-                    .as_ref()
+                self.right()
                     .map(|r| r.query_left(min, inner_query))
                     .unwrap_or_default(),
             );
@@ -305,22 +303,19 @@ where
         if self.max_left < max {
             // println!("max_left < max: {} < {}", self.max_left, max);
             result.extend(
-                self.left
-                    .as_ref()
+                self.left()
                     .map(|l| l.sub_tree.query(inner_query))
                     .unwrap_or_else(|| self.sub_tree.query(inner_query)),
             );
             result.extend(
-                self.right
-                    .as_ref()
+                self.right()
                     .map(|r| r.query_right(max, inner_query))
                     .unwrap_or_default(),
             );
         } else {
             // println!("max_left => max: {} < {}", self.max_left, max);
             result.extend(
-                self.left
-                    .as_ref()
+                self.left()
                     .map(|l| l.query_right(max, inner_query))
                     .unwrap_or_default(),
             );
@@ -373,7 +368,7 @@ where
         //     my_query.max, self.max_left
         // );
         if my_query.max <= self.max_left {
-            return self.left.as_ref().and_then(|l| l.split(query));
+            return self.left().and_then(|l| l.split(query));
         }
 
         // println!(
@@ -381,10 +376,10 @@ where
         //     self.max_left, my_query.min
         // );
         if self.max_left < my_query.min {
-            return self.right.as_ref().and_then(|r| r.split(query));
+            return self.right().and_then(|r| r.split(query));
         }
 
-        if let (Some(left), Some(right)) = (self.left.as_ref(), self.right.as_ref()) {
+        if let (Some(left), Some(right)) = (self.left(), self.right()) {
             Some(SplitResult::Split { left, right })
         } else {
             Some(SplitResult::Final(self.sub_tree.iter_query(&query.1)))
@@ -403,11 +398,7 @@ where
         //     my_query.max, self.max_left
         // );
         if my_query.max <= self.max_left {
-            return self
-                .left
-                .as_ref()
-                .map(|l| l.query(query))
-                .unwrap_or_default();
+            return self.left().map(|l| l.query(query)).unwrap_or_default();
         }
 
         // println!(
@@ -415,14 +406,10 @@ where
         //     self.max_left, my_query.min
         // );
         if self.max_left < my_query.min {
-            return self
-                .right
-                .as_ref()
-                .map(|r| r.query(query))
-                .unwrap_or_default();
+            return self.right().map(|r| r.query(query)).unwrap_or_default();
         }
 
-        if let (Some(left), Some(right)) = (self.left.as_ref(), self.right.as_ref()) {
+        if let (Some(left), Some(right)) = (self.left(), self.right()) {
             let mut left_trees = left.query_left(my_query.min, &query.1);
             let right_trees = right.query_right(my_query.max, &query.1);
             left_trees.extend(right_trees.into_iter());
@@ -582,7 +569,7 @@ fn perf_test(point_count: usize) -> (f64, f64, usize) {
         })
         .collect();
     let end = Instant::now();
-    let brute_time =  (end - start).as_secs_f64();
+    let brute_time = (end - start).as_secs_f64();
     println!(
         "precalc for {} elments took {}s",
         expected.len(),
@@ -609,7 +596,7 @@ fn perf_test(point_count: usize) -> (f64, f64, usize) {
     let query = (x_query, (y_query, ()));
     let result = tree.iter_query(&query).collect::<Vec<_>>();
     let end = Instant::now();
-    let query_time =  (end - start).as_secs_f64();
+    let query_time = (end - start).as_secs_f64();
     println!(
         "querying tree with iterator for {} elements took {}s",
         result.len(),
@@ -625,6 +612,13 @@ fn perf_test(point_count: usize) -> (f64, f64, usize) {
 fn main() {
     let res: Vec<_> = (10..=19).map(|i| (1 << i, perf_test(1 << i))).collect();
     for (i, (a, b, len)) in res {
-      println!("{:08} ({:08}) | {:0.10} {:0.10} {:0.10}", i, len, a, b, b/a)
+        println!(
+            "{:08} ({:08}) | {:0.10} {:0.10} {:0.10}",
+            i,
+            len,
+            a,
+            b,
+            b / a
+        )
     }
 }
