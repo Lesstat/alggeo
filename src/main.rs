@@ -52,8 +52,7 @@ where
     }
 }
 
-struct FCElement<'items, T> {
-    elem: &'items T,
+struct FCHints {
     left: usize,
     right: usize,
 }
@@ -64,7 +63,8 @@ where
 {
     left: Option<Box<Self>>,
     max_left: usize,
-    elements: Vec<FCElement<'items, T>>,
+    elements: Vec<&'items T>,
+    hints: Vec<FCHints>,
     // query.min, query.max
     // start = elements.binary_search(query.min)
     // end = elements.binary_search(query.max)
@@ -72,7 +72,6 @@ where
     // ...
     // left.query(start.left, end.left)
     // ...
-
     right: Option<Box<Self>>,
     _t: PhantomData<(&'me T, &'items T)>,
 }
@@ -284,7 +283,7 @@ where
     I: Item,
 {
     type Query = (RTreeQuery<usize>, RTreeQuery<usize>);
-    type QueryIter = RTreeIter<'items, 'me, I>;
+    type QueryIter = std::iter::Empty<&'items I>;
 
     fn build(items: &[&'items I], dim: usize) -> Self {
         unimplemented!();
@@ -434,17 +433,29 @@ where
     'items: 'me,
     I: Item,
 {
+    fn left(&self) -> Option<&Self> {
+        self.left.as_ref().map(|b| b.as_ref())
+    }
+
+    fn right(&self) -> Option<&Self> {
+        self.right.as_ref().map(|b| b.as_ref())
+    }
     fn query_left(&self, min: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
         // println!("entering query left of: {:?}", self);
-        let start = self.elements[start_hint];
-        let end = self.elements[end_hint];
+        let start = &self.hints[start_hint];
+        let end = &self.hints[end_hint];
         let mut result = vec![];
         if min <= self.max_left {
             // println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
-                self.right
-                    .map(|r| r.elements[start.right..end.right].map(|e| e.elem))
-                    .urwrap_or_default()
+                self.right()
+                    .map(|r| {
+                        r.elements[start.right..end.right]
+                            .iter()
+                            .copied()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
             );
             result.extend(
                 self.left()
@@ -463,15 +474,15 @@ where
     }
     fn query_right(&self, max: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
         // println!("entering query left of: {:?}", self);
-        let start = self.elements[start_hint];
-        let end = self.elements[end_hint];
+        let start = &self.hints[start_hint];
+        let end = &self.hints[end_hint];
         let mut result = vec![];
         if self.max_left < max {
             // println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
-                self.left
-                    .map(|r| r.elements[start.left..end.left].map(|e| e.elem))
-                    .urwrap_or_default()
+                self.left()
+                    .map(|r| r.elements[start.left..end.left].iter().collect::<Vec<_>>())
+                    .unwrap_or_default(),
             );
             result.extend(
                 self.right()
@@ -516,30 +527,45 @@ where
         if self.max_left < my_query.min {
             return self.right().map(|r| r.query(query)).unwrap_or_default();
         }
+        let lower_dim = I::max_dim() - 1;
 
-        let res = self.elements.binary_search_by_key(lower_query.min, |e| e.elem.index(e.elem.max_dim() - 1));
+        let res = self
+            .elements
+            .binary_search_by_key(&lower_query.min, |e| e.index(lower_dim));
         let start_hint = match res {
-            Error(idx) => idx,
-            Ok(idx) => self.elements[..idx].rev()
-                .enumerate().skip_while(|(i, e)| e.elem == query.min)
-                .map(|(i,e)| idx - i + 1).next()
+            Err(idx) => idx,
+            Ok(idx) => self.elements[..idx]
+                .iter()
+                .rev()
+                .enumerate()
+                .skip_while(|(_, e)| e.index(lower_dim) == lower_query.min)
+                .map(|(i, _)| idx - i + 1)
+                .next()
+                .unwrap_or(0),
         };
-        let res = self.elements.binary_search_by_key(lower_query.max, |e| e.elem.index(e.elem.max_dim() - 1));
+        let res = self
+            .elements
+            .binary_search_by_key(&lower_query.max, |e| e.index(lower_dim));
         let end_hint = match res {
-            Error(idx) => idx,
+            Err(idx) => idx,
             Ok(idx) => self.elements[idx..]
-                .enumerate().skip_while(|(i, e)| e.elem == query.max)
-                .map(|(i,e)| idx + i).next()
+                .iter()
+                .enumerate()
+                .skip_while(|(_, e)| e.index(lower_dim) == lower_query.max)
+                .map(|(i, _)| idx + i)
+                .next()
+                .unwrap_or_else(|| self.elements.len() - 1),
         };
-        let start = self.elements[start_hint];
-        let end = self.elements[end_hint];
+        let start = &self.hints[start_hint];
+        let end = &self.hints[end_hint];
         if let (Some(left), Some(right)) = (self.left(), self.right()) {
             let mut left_trees = left.query_left(my_query.min, start.left, end.left);
             let right_trees = right.query_right(my_query.max, start.right, end.right);
             left_trees.extend(right_trees.into_iter());
             left_trees
         } else {
-            self.sub_tree.query(&query.1)
+            // self.sub_tree.query(&query.1)
+            unimplemented!()
         }
     }
 }
