@@ -864,6 +864,7 @@ fn test_2d_range_tree_iter() {
 }
 
 #[test]
+#[ignore]
 fn test_2d_fctree_leaf_should_have_one_element() {
     let seed = 16975172300249298234;
     let point_count = 1048576;
