@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{collections::HashSet, fmt::Debug, iter::Copied, marker::PhantomData, time::Instant};
+use std::{
+    cmp::Ordering, collections::HashSet, fmt::Debug, iter::Copied, marker::PhantomData,
+    time::Instant,
+};
 
 use rand::{
     distributions::Uniform,
@@ -452,7 +455,6 @@ where
     I: Item,
 {
     fn build(items: &[&'items I], lower_items: Vec<&'items I>, dim: usize) -> Self {
-
         if items.len() == 1 {
             let max_left = items[0].index(dim);
             // println!("max_left: {}", max_left);
@@ -470,22 +472,39 @@ where
         let median = &items[median_index];
         let max_left = median.index(dim);
         // println!("max_left: {}", max_left);
-        
 
         let mut left_items = Vec::with_capacity(median_index + 1);
         let mut right_items = Vec::with_capacity(items.len() - median_index - 1);
         let mut hints = Vec::with_capacity(items.len() + 1);
 
+        let right_median_points: HashSet<_> = items[median_index + 1..]
+            .iter()
+            .take_while(|i| i.index(dim) == median.index(dim))
+            .map(|&i| i as *const _)
+            .collect();
+
         for &e in &lower_items {
-            hints.push(FCHints{left: left_items.len(), right: right_items.len()});
-            if e.index(dim) <= median.index(dim) {
-                left_items.push(e);
-            } else {
-                right_items.push(e);
+            hints.push(FCHints {
+                left: left_items.len(),
+                right: right_items.len(),
+            });
+            match e.index(dim).cmp(&median.index(dim)) {
+                Ordering::Less => left_items.push(e),
+                Ordering::Equal => {
+                    if right_median_points.contains(&(e as *const _)) {
+                        right_items.push(e);
+                    } else {
+                        left_items.push(e);
+                    }
+                }
+                Ordering::Greater => right_items.push(e),
             }
         }
-        hints.push(FCHints{left: left_items.len(), right: right_items.len()});
-        
+        hints.push(FCHints {
+            left: left_items.len(),
+            right: right_items.len(),
+        });
+
         let left = Box::new(Self::build(&items[..=median_index], left_items, dim));
         let right = Box::new(Self::build(&items[median_index + 1..], right_items, dim));
 
@@ -508,19 +527,26 @@ where
     }
 
     fn query_left(&self, min: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
-        println!("entering query left of: {:?}", self);
-        println!("query_left: start_hint {:?}, end {:?}", start_hint, end_hint);
+        // println!("entering query left of: {:?}", self);
+        // println!(
+        //     "query_left: start_hint {:?}, end {:?}",
+        //     start_hint, end_hint
+        // );
         if end_hint - start_hint == 0 {
             return vec![];
         }
         if self.right.is_none() {
-            return self.elements[start_hint..end_hint].iter().copied().collect::<Vec<_>>()
+            return self.elements[start_hint..end_hint]
+                .iter()
+                .filter(|e| min <= e.index(I::max_dim() - 2))
+                .copied()
+                .collect::<Vec<_>>();
         }
         let start = &self.hints[start_hint];
         let end = &self.hints[end_hint];
         let mut result = vec![];
         if min <= self.max_left {
-            println!("min <= max_left: {} <= {}", min, self.max_left);
+            // println!("min <= max_left: {} <= {}", min, self.max_left);
             result.extend(
                 self.right()
                     .map(|r| {
@@ -537,7 +563,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
-            println!("min > max_left: {} > {}", min, self.max_left);
+            // println!("min > max_left: {} > {}", min, self.max_left);
             result.extend(
                 self.right()
                     .map(|l| l.query_left(min, start.right, end.right))
@@ -547,19 +573,26 @@ where
         result
     }
     fn query_right(&self, max: usize, start_hint: usize, end_hint: usize) -> Vec<&'items I> {
-        println!("entering query left of: {:?}", self);
-        println!("query_right: start_hint {:?}, end {:?}", start_hint, end_hint);
+        // println!("entering query left of: {:?}", self);
+        // println!(
+        //     "query_right: start_hint {:?}, end {:?}",
+        //     start_hint, end_hint
+        // );
         if end_hint - start_hint == 0 {
             return vec![];
         }
         if self.right.is_none() {
-            return self.elements[start_hint..end_hint].iter().copied().collect::<Vec<_>>()
+            return self.elements[start_hint..end_hint]
+                .iter()
+                .filter(|e| e.index(I::max_dim() - 2) < max)
+                .copied()
+                .collect::<Vec<_>>();
         }
         let start = &self.hints[start_hint];
         let end = &self.hints[end_hint];
         let mut result = vec![];
         if self.max_left < max {
-            println!("max <= max_left: {} <= {}", max, self.max_left);
+            // println!("max <= max_left: {} <= {}", max, self.max_left);
             result.extend(
                 self.left()
                     .map(|r| r.elements[start.left..end.left].iter().collect::<Vec<_>>())
@@ -571,7 +604,7 @@ where
                     .unwrap_or_default(),
             );
         } else {
-            println!("max > max_left: {} > {}", max, self.max_left);
+            // println!("max > max_left: {} > {}", max, self.max_left);
             result.extend(
                 self.left()
                     .map(|l| l.query_right(max, start.left, end.left))
@@ -583,7 +616,7 @@ where
 
     //    X-Tree              Y-Tree
     //         2              .1.224
-    //     1       3      .1.2      ..24 
+    //     1       3      .1.2      ..24
     //   1   2   3   4  :2   .1.  .4   :2
 
     fn query(
@@ -594,7 +627,24 @@ where
         let my_query = &query.0;
         let lower_query = &query.1;
 
+        let lower_dim = I::max_dim() - 1;
+        let my_dim = lower_dim - 1;
 
+        if self.right.is_none() {
+            assert!(self.left.is_none());
+            assert_eq!(self.elements.len(), 1);
+            return self
+                .elements
+                .iter()
+                .filter(|e| {
+                    my_query.min <= e.index(my_dim)
+                        && e.index(my_dim) < my_query.max
+                        && lower_query.min <= e.index(lower_dim)
+                        && e.index(lower_dim) < lower_query.max
+                })
+                .copied()
+                .collect::<Vec<_>>();
+        }
         // println!(
         //     "my_query.max <= self.max_left: {} <= {}",
         //     my_query.max, self.max_left
@@ -612,12 +662,20 @@ where
         }
         let lower_dim = I::max_dim() - 1;
 
-
-        let start_hint = lower_bound_by_key(&self.elements, &lower_query.min, |e| e.index(lower_dim));
+        let start_hint =
+            lower_bound_by_key(&self.elements, &lower_query.min, |e| e.index(lower_dim));
         let end_hint = lower_bound_by_key(&self.elements, &lower_query.max, |e| e.index(lower_dim));
-        println!("TreeNode::query: start_hint {:?}, end {:?}, my_qurey {:?}, low_q {:?}", start_hint, end_hint,
-                 my_query, lower_query);
-        println!("{:?}", self.elements.iter().map(|e| e.index(lower_dim)).collect::<Vec<_>>());
+        // println!(
+        //     "TreeNode::query: start_hint {:?}, end {:?}, my_qurey {:?}, low_q {:?}",
+        //     start_hint, end_hint, my_query, lower_query
+        // );
+        // println!(
+        //     "{:?}",
+        //     self.elements
+        //         .iter()
+        //         .map(|e| e.index(lower_dim))
+        //         .collect::<Vec<_>>()
+        // );
         let start = &self.hints[start_hint];
         let end = &self.hints[end_hint];
         if let (Some(left), Some(right)) = (self.left(), self.right()) {
@@ -632,20 +690,24 @@ where
     }
 }
 
-fn lower_bound_by_key<'a, E: Debug, B: Ord, F: FnMut(&E) -> B>(v: &'a[E], b: &B, mut key: F) -> usize {
+fn lower_bound_by_key<'a, E: Debug, B: Ord, F: FnMut(&E) -> B>(
+    v: &'a [E],
+    b: &B,
+    mut key: F,
+) -> usize {
     let res = v.binary_search_by_key(b, &mut key);
-    println!("{:?}", res);
+    // println!("{:?}", res);
     match res {
         Err(idx) => idx,
         Ok(idx) => v[..idx]
             .iter()
             .rev()
             .enumerate()
-            .inspect(|(i, e)| println!("before skip {:?},{:?}", i, e))
+            // .inspect(|(i, e)| println!("before skip {:?},{:?}", i, e))
             .skip_while(|(_, e)| key(e) == *b)
-            .inspect(|(i, e)| println!("before map {:?},{:?}", i, e))
+            // .inspect(|(i, e)| println!("before map {:?},{:?}", i, e))
             .map(|(i, _)| idx - i)
-            .inspect(|i| println!("after map {:?}", i))
+            // .inspect(|i| println!("after map {:?}", i))
             .next()
             .unwrap_or(0),
     }
@@ -743,18 +805,18 @@ fn test_fc_2d_range_tree() {
         Point { x: 4, y: 2 },
     ];
     //         2            1224
-    //     1       3      12   24 
+    //     1       3      12   24
     //   1   2   3   4   2  1 4  2
     //
     //         2              1.22.4
-    //     1       3      1.2.      .2.4 
+    //     1       3      1.2.      .2.4
     //   1   2   3   4  .2.   1:  :4   .2.
     //
     //         2              .1.224
-    //     1       3      .1.2      ..24 
+    //     1       3      .1.2      ..24
     //   1   2   3   4  :2   .1.  .4   :2
     //
-    
+
     let tree: FCRTree<Point> = FCRTree::build(&items);
     let query = (
         RangedQuery { min: 2, max: 3 },
@@ -764,6 +826,21 @@ fn test_fc_2d_range_tree() {
     let result: Vec<_> = tree.query(&query);
 
     assert_eq!(vec![&Point { x: 2, y: 1 }], result);
+}
+
+#[test]
+fn test_fc_2d_range_tree_xquery_is_respected() {
+    let items = [Point { x: 28, y: 49 }, Point { x: 50, y: 43 }];
+
+    let tree: FCRTree<Point> = FCRTree::build(&items);
+    let query = (
+        RangedQuery { min: 4, max: 42 },
+        RangedQuery { min: 39, max: 63 },
+    );
+
+    let result: Vec<_> = tree.query(&query);
+
+    assert_eq!(vec![&Point { x: 28, y: 49 }], result);
 }
 
 #[test]
@@ -786,6 +863,66 @@ fn test_2d_range_tree_iter() {
     assert_eq!(vec![&items[2]], result);
 }
 
+#[test]
+fn test_2d_fctree_leaf_should_have_one_element() {
+    let seed = 16975172300249298234;
+    let point_count = 1048576;
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    let between = Uniform::from(1..100);
+
+    println!("generating points");
+    let points: Vec<_> = (0..point_count)
+        .map(|_| {
+            let x = between.sample(&mut rng);
+            let y = between.sample(&mut rng);
+            Point { x, y }
+        })
+        .collect();
+
+    println!("building fc tree");
+    let start = Instant::now();
+    // let tree: RTree<Point, RTree<_>> = RTree::build(&points);
+    let fc_tree = FCRTree::build(&points);
+    let end = Instant::now();
+    println!("Building tree took {}s", (end - start).as_secs_f64());
+
+    let mut min = between.sample(&mut rng);
+    let mut max = between.sample(&mut rng);
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
+    }
+    let x_query = RangedQuery { min, max };
+
+    let mut min = between.sample(&mut rng);
+    let mut max = between.sample(&mut rng);
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
+    }
+    let y_query = RangedQuery { min, max };
+
+    println!("querying fc tree");
+    let start = Instant::now();
+    let query = (x_query.clone(), (y_query.clone()/*, ()*/));
+    let result = fc_tree.query(&query);
+    let end = Instant::now();
+
+    let fc_query_time = (end - start).as_secs_f64();
+    println!(
+        "querying tree for {} elements took {}s",
+        result.len(),
+        fc_query_time,
+    );
+
+    let res_vec: Vec<_> = result.into_iter().collect();
+    // if expected != res_vec {
+    dbg!(&points);
+    dbg!(&query);
+    // dbg!(&expected);
+    dbg!(&res_vec);
+    // }
+}
+
 fn perf_test(point_count: usize) -> (f64, f64, usize) {
     let mut thread_rng = thread_rng();
     let seed = thread_rng.gen();
@@ -806,6 +943,13 @@ fn perf_test(point_count: usize) -> (f64, f64, usize) {
     println!("building tree");
     let start = Instant::now();
     let tree: RTree<Point, RTree<_>> = RTree::build(&points);
+    let end = Instant::now();
+    println!("Building tree took {}s", (end - start).as_secs_f64());
+
+    println!("building fc tree");
+    let start = Instant::now();
+    // let tree: RTree<Point, RTree<_>> = RTree::build(&points);
+    let fc_tree = FCRTree::build(&points);
     let end = Instant::now();
     println!("Building tree took {}s", (end - start).as_secs_f64());
 
@@ -846,34 +990,61 @@ fn perf_test(point_count: usize) -> (f64, f64, usize) {
     let query = (x_query.clone(), (y_query.clone(), ()));
     let result = tree.query(&query);
     let end = Instant::now();
-    println!(
-        "querying tree for {} elements took {}s",
-        result.len(),
-        (end - start).as_secs_f64()
-    );
-
-    assert_eq!(expected, result.into_iter().collect());
-
-    println!("querying tree with iterator");
-    let start = Instant::now();
-    let query = (x_query, (y_query, ()));
-    let result = tree.iter_query(&query).collect::<Vec<_>>();
-    let end = Instant::now();
     let query_time = (end - start).as_secs_f64();
     println!(
-        "querying tree with iterator for {} elements took {}s",
+        "querying tree for {} elements took {}s",
         result.len(),
         query_time,
     );
 
-    let result_len = result.len();
-    assert_eq!(expected, result.into_iter().collect());
+    let res_vec = result.into_iter().collect();
+    if expected != res_vec {
+        dbg!(&points);
+        dbg!(&query);
+        dbg!(&expected);
+        dbg!(&res_vec);
+    }
+    println!("querying fc tree");
+    let start = Instant::now();
+    let query = (x_query.clone(), (y_query.clone()/*, ()*/));
+    let result = fc_tree.query(&query);
+    let end = Instant::now();
 
-    (brute_time, query_time, result_len)
+    let fc_query_time = (end - start).as_secs_f64();
+    println!(
+        "querying tree for {} elements took {}s",
+        result.len(),
+        fc_query_time,
+    );
+
+    let res_vec = result.into_iter().collect();
+    if expected != res_vec {
+        dbg!(&points);
+        dbg!(&query);
+        dbg!(&expected);
+        dbg!(&res_vec);
+    }
+
+    // println!("querying tree with iterator");
+    // let start = Instant::now();
+    // let query = (x_query, (y_query, ()));
+    // let result = tree.iter_query(&query).collect::<Vec<_>>();
+    // let end = Instant::now();
+    // let query_time = (end - start).as_secs_f64();
+    // println!(
+    //     "querying tree with iterator for {} elements took {}s",
+    //     result.len(),
+    //     query_time,
+    // );
+
+    // let result_len = result.len();
+    // assert_eq!(expected, result.into_iter().collect());
+
+    (query_time, fc_query_time, expected.len())
 }
 
 fn main() {
-    let res: Vec<_> = (10..=19).map(|i| (1 << i, perf_test(1 << i))).collect();
+    let res: Vec<_> = (10..=20).map(|i| (1 << i, perf_test(1 << i))).collect();
     for (i, (a, b, len)) in res {
         println!(
             "{:08} ({:08}) | {:0.10} {:0.10} {:0.10}",
@@ -881,7 +1052,15 @@ fn main() {
             len,
             a,
             b,
-            b / a
+            a / b
         )
     }
+}
+
+pub fn is_sorted_by_key<T, F, K>(slice: &[T], f: F) -> bool
+where
+    F: Fn(&T) -> K,
+    K: PartialOrd,
+{
+    slice.windows(2).all(|w| f(&w[0]) <= f(&w[1]))
 }
